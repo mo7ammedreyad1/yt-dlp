@@ -2,17 +2,11 @@
 'use strict';
 
 /**
- * يقرأ رابط فيديو يوتيوب من متغير البيئة VIDEO_URL،
- * يحمّله باستخدام yt-dlp (لازم يكون متثبت مسبقًا في الـ runner)،
- * وبعدين ينشئ GitHub Release ويرفع الفيديو كـ asset فيه.
- *
- * متغيرات البيئة المطلوبة:
- *   VIDEO_URL         - رابط فيديو اليوتيوب
- *   GITHUB_TOKEN       - توكن للتعامل مع GitHub API (secrets.GITHUB_TOKEN كافي)
- *   GITHUB_REPOSITORY  - متاح تلقائيًا جوه GitHub Actions (owner/repo)
+ * يقرأ رابط الفيديو من متغير البيئة VIDEO_URL،
+ * يحمّله عبر Cobalt API،
+ * ينشئ GitHub Release ويرفع الفيديو كـ asset فيه.
  */
 
-const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { Octokit } = require('@octokit/rest');
@@ -20,6 +14,17 @@ const { Octokit } = require('@octokit/rest');
 function fail(message) {
   console.error(`❌ ${message}`);
   process.exit(1);
+}
+
+// دالة مساعدة لتنزيل الملف وحفظه على القرص
+async function downloadFile(url, outputPath) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`فشل تنزيل ملف الفيديو: ${response.statusText}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  fs.writeFileSync(outputPath, buffer);
 }
 
 async function main() {
@@ -34,46 +39,48 @@ async function main() {
   const [owner, repo] = repoFull.split('/');
   const workDir = process.cwd();
 
-  console.log(`⬇️  بدء تحميل الفيديو من: ${videoUrl}`);
+  console.log(`⬇️  جاري طلب رابط التحميل المباشر من Cobalt API لـ: ${videoUrl}`);
 
-  // --print after_move:filepath بيطبع المسار النهائي للملف بعد ما التحميل
-  // والدمج (merge) يخلصوا خالص، وده أدق طريقة نعرف بيها اسم الملف الناتج.
-  const ytDlpArgs = [
-    '--quiet',
-    '--no-warnings',
-    '-f', 'bv*+ba/b',
-    '--merge-output-format', 'mp4',
-    '--restrict-filenames',
-    '-o', '%(title).150B [%(id)s].%(ext)s',
-    '--print', 'after_move:filepath',
-    videoUrl,
-  ];
+  // 1. طلب رابط التحميل من Cobalt API
+  const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
+    method: 'POST',
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    },
+    body: JSON.stringify({
+      url: videoUrl,
+      videoQuality: 'max', // أعلى جودة مجهزة (1080p, 4k, إلخ)
+      filenamePattern: 'basic'
+    })
+  });
 
-  let filePath;
-  try {
-    // execFileSync (مش exec/execSync) عشان الرابط بييجي من مدخلات المستخدم
-    // ومش عايزين نمرره جوه shell string لتفادي أي مشاكل حقن أوامر.
-    const output = execFileSync('yt-dlp', ytDlpArgs, {
-      cwd: workDir,
-      encoding: 'utf-8',
-      maxBuffer: 1024 * 1024 * 50,
-    });
-    const lines = output.trim().split('\n').filter(Boolean);
-    filePath = lines[lines.length - 1];
-  } catch (err) {
-    fail(`فشل تحميل الفيديو عن طريق yt-dlp: ${err.message}`);
+  if (!cobaltRes.ok) {
+    fail(`فشل التواصل مع Cobalt API: ${cobaltRes.status} ${cobaltRes.statusText}`);
   }
 
-  if (!filePath || !fs.existsSync(filePath)) {
-    fail('التحميل خلص بس مقدرتش ألاقي الملف الناتج على القرص');
+  const cobaltData = await cobaltRes.json();
+
+  if (cobaltData.status === 'error') {
+    fail(`خطأ من Cobalt: ${cobaltData.text || 'تعذر معالجة الرابط'}`);
   }
 
-  const fullPath = path.resolve(workDir, filePath);
-  const fileName = path.basename(fullPath);
+  const downloadUrl = cobaltData.url;
+  const fileName = cobaltData.filename || `video-${Date.now()}.mp4`;
+  const fullPath = path.resolve(workDir, fileName);
+
+  if (!downloadUrl) {
+    fail('لم يتم إرجاع رابط تحميل مباشر من الخدمة.');
+  }
+
+  console.log(`⬇️  بدء تنزيل الفيديو...`);
+  await downloadFile(downloadUrl, fullPath);
+
   const fileSize = fs.statSync(fullPath).size;
+  console.log(`✅ اتحمل بنجاح: ${fileName} (${(fileSize / (1024 * 1024)).toFixed(1)} MB)`);
 
-  console.log(`✅ اتحمل: ${fileName} (${(fileSize / (1024 * 1024)).toFixed(1)} MB)`);
-
+  // 2. إنشاء GitHub Release ورفع الملف
   const octokit = new Octokit({ auth: token });
   const tagName = `video-${Date.now()}`;
 
@@ -84,7 +91,7 @@ async function main() {
     repo,
     tag_name: tagName,
     name: fileName.replace(/\.[^/.]+$/, ''),
-    body: `تم التحميل تلقائيًا عن طريق GitHub Actions من الرابط:\n${videoUrl}`,
+    body: `تم التحميل تلقائيًا عن طريق GitHub Actions و Cobalt API من الرابط:\n${videoUrl}`,
   });
 
   console.log('⬆️  بيتم رفع الفيديو كـ asset في الـ Release...');
@@ -109,3 +116,4 @@ async function main() {
 main().catch((err) => {
   fail(err.stack || err.message);
 });
+

@@ -1,0 +1,41 @@
+name: تحميل فيديو يوتيوب ورفعه كـ Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'رابط فيديو اليوتيوب'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: إعداد Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: تثبيت ffmpeg و yt-dlp
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: تثبيت مكتبات Node
+        run: npm install
+
+      - name: تحميل الفيديو ورفعه كـ Release
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node download-and-release.js

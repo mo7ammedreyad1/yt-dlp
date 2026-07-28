@@ -1,10 +1,10 @@
-name: تحميل فيديو يوتيوب ورفعه كـ Release
+name: تحميل فيديو ورفعه كـ Release (Cobalt API)
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'رابط فيديو اليوتيوب'
+        description: 'رابط الفيديو (YouTube, TikTok, Instagram, Twitter... الخ)'
         required: true
         type: string
 
@@ -22,14 +22,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: تثبيت ffmpeg و yt-dlp
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y ffmpeg
-          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
-          yt-dlp --version
 
       - name: تثبيت مكتبات Node
         run: npm install

@@ -1,10 +1,10 @@
-name: تحميل فيديو ورفعه كـ Release (Cobalt API)
+name: تحميل فيديو يوتيوب (Piped API) ورفعه كـ Release
 
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'رابط الفيديو (YouTube, TikTok, Instagram, Twitter... الخ)'
+        description: 'رابط فيديو اليوتيوب'
         required: true
         type: string
 
@@ -23,11 +23,20 @@ jobs:
         with:
           node-version: '20'
 
+      # ffmpeg لازم بس لو الفيديو مطلوع من Piped كفيديو وصوت منفصلين
+      # (بعض الفيديوهات بترجع نسخة مدموجة جاهزة ومحتاجتوش دمج خالص)
+      - name: تثبيت ffmpeg
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+
       - name: تثبيت مكتبات Node
         run: npm install
 
-      - name: تحميل الفيديو ورفعه كـ Release
+      - name: تحميل الفيديو عن طريق Piped API ورفعه كـ Release
         env:
           VIDEO_URL: ${{ inputs.video_url }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # اختياري: لو عايز تحدد قايمة instances بنفسك بدل الافتراضية اللي في الكود
+          # PIPED_INSTANCES: 'https://pipedapi.kavin.rocks,https://pipedapi.adminforge.de'
         run: node download-and-release.js

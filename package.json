@@ -1,8 +1,8 @@
 {
   "name": "youtube-to-github-release",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "تحميل فيديو من يوتيوب عن طريق Piped API ورفعه تلقائيًا كـ GitHub Release عن طريق GitHub Actions",
+  "description": "تحميل فيديو من يوتيوب ورفعه تلقائيًا كـ GitHub Release عن طريق GitHub Actions",
   "main": "download-and-release.js",
   "dependencies": {
     "@octokit/rest": "^20.1.1"

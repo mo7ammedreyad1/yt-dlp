@@ -1,10 +1,11 @@
 {
   "name": "youtube-to-github-release",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "تحميل فيديو من يوتيوب ورفعه تلقائيًا كـ GitHub Release عن طريق GitHub Actions",
+  "description": "تحميل فيديو من يوتيوب عن طريق متصفح حقيقي (Playwright) ورفعه تلقائيًا كـ GitHub Release",
   "main": "download-and-release.js",
   "dependencies": {
+    "playwright": "^1.62.1",
     "@octokit/rest": "^20.1.1"
   }
 }

@@ -2,152 +2,24 @@
 'use strict';
 
 /**
- * يحمّل فيديو يوتيوب عن طريق Piped API (مش yt-dlp خالص) ويرفعه كـ GitHub Release.
+ * يقرأ رابط فيديو يوتيوب من متغير البيئة VIDEO_URL،
+ * يحمّله باستخدام yt-dlp (لازم يكون متثبت مسبقًا في الـ runner)،
+ * وبعدين ينشئ GitHub Release ويرفع الفيديو كـ asset فيه.
  *
- * ليه Piped؟ الاستخراج بيحصل على سيرفر الـ Piped instance نفسه، مش على
- * IP بتاع GitHub Actions، فمش بتقابل مشكلة "Sign in to confirm you're not a bot".
- *
- * متغيرات البيئة:
- *   VIDEO_URL         - رابط فيديو اليوتيوب (مطلوب)
- *   GITHUB_TOKEN       - توكن GitHub (secrets.GITHUB_TOKEN كافي)
+ * متغيرات البيئة المطلوبة:
+ *   VIDEO_URL         - رابط فيديو اليوتيوب
+ *   GITHUB_TOKEN       - توكن للتعامل مع GitHub API (secrets.GITHUB_TOKEN كافي)
  *   GITHUB_REPOSITORY  - متاح تلقائيًا جوه GitHub Actions (owner/repo)
- *   PIPED_INSTANCES    - اختياري: قايمة instances مفصولة بفاصلة لتجربتها
- *                        بدل القايمة الافتراضية اللي في الكود
  */
 
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
-const { Readable } = require('stream');
 const { Octokit } = require('@octokit/rest');
 
 function fail(message) {
   console.error(`❌ ${message}`);
   process.exit(1);
-}
-
-// قايمة الـ instances الافتراضية - من التوثيق الرسمي لمشروع Piped:
-// https://github.com/TeamPiped/documentation/blob/main/content/docs/public-instances/index.md
-// لو حبيت تحدّثها أو تضيف/تشيل instance، بص على الرابط ده أو https://status.piped.video
-const DEFAULT_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi-libre.kavin.rocks',
-  'https://pipedapi.adminforge.de',
-  'https://pipedapi.leptons.xyz',
-  'https://api.piped.yt',
-  'https://pipedapi.drgns.space',
-];
-
-function getInstances() {
-  const fromEnv = process.env.PIPED_INSTANCES;
-  if (fromEnv && fromEnv.trim()) {
-    return fromEnv.split(',').map((s) => s.trim()).filter(Boolean);
-  }
-  return DEFAULT_INSTANCES;
-}
-
-function extractVideoId(url) {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=)([\w-]{11})/,
-    /(?:youtu\.be\/)([\w-]{11})/,
-    /(?:youtube\.com\/shorts\/)([\w-]{11})/,
-    /(?:youtube\.com\/embed\/)([\w-]{11})/,
-  ];
-  for (const re of patterns) {
-    const m = url.match(re);
-    if (m) return m[1];
-  }
-  return null;
-}
-
-async function fetchWithTimeout(url, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function getStreamsInfo(videoId) {
-  const instances = getInstances();
-  const errors = [];
-
-  for (const instance of instances) {
-    const apiUrl = `${instance.replace(/\/$/, '')}/streams/${videoId}`;
-    try {
-      console.log(`🔎 بتجرب instance: ${instance}`);
-      const res = await fetchWithTimeout(apiUrl, 15000);
-      if (!res.ok) {
-        errors.push(`${instance}: HTTP ${res.status}`);
-        continue;
-      }
-      const data = await res.json();
-      if (!data || (!data.videoStreams?.length && !data.audioStreams?.length)) {
-        errors.push(`${instance}: الرد مفهوش streams`);
-        continue;
-      }
-      console.log(`✅ نجح مع: ${instance}`);
-      return data;
-    } catch (err) {
-      errors.push(`${instance}: ${err.message}`);
-    }
-  }
-
-  fail(`كل الـ Piped instances فشلت معايا:\n${errors.join('\n')}`);
-}
-
-function extensionFromMime(mimeType) {
-  if (!mimeType) return 'mp4';
-  if (mimeType.includes('webm')) return 'webm';
-  if (mimeType.includes('3gpp')) return '3gp';
-  return 'mp4';
-}
-
-function pickBestStreams(data) {
-  const videoStreams = data.videoStreams || [];
-  const audioStreams = data.audioStreams || [];
-
-  // أفضل حالة: stream فيه فيديو + صوت مدموجين (progressive) - مش محتاجين ffmpeg خالص
-  const progressive = videoStreams
-    .filter((s) => s.videoOnly === false)
-    .sort((a, b) => (b.height || 0) - (a.height || 0));
-
-  if (progressive.length > 0) {
-    return { type: 'progressive', video: progressive[0] };
-  }
-
-  // مفيش نسخة مدموجة: ناخد أفضل فيديو (من غير صوت) + أفضل صوت لوحده وندمجهم بـ ffmpeg
-  const bestVideo = [...videoStreams].sort((a, b) => (b.height || 0) - (a.height || 0))[0];
-  const bestAudio = [...audioStreams].sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-  if (!bestVideo || !bestAudio) {
-    fail('مقدرتش ألاقي streams صالحة لتحميل الفيديو ده');
-  }
-
-  return { type: 'separate', video: bestVideo, audio: bestAudio };
-}
-
-function sanitizeFilename(name) {
-  return name
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 150);
-}
-
-async function downloadToFile(url, destPath) {
-  const res = await fetchWithTimeout(url, 120000);
-  if (!res.ok || !res.body) {
-    fail(`فشل تحميل الملف (HTTP ${res.status}): ${url}`);
-  }
-  await new Promise((resolve, reject) => {
-    const fileStream = fs.createWriteStream(destPath);
-    Readable.fromWeb(res.body).pipe(fileStream);
-    fileStream.on('finish', resolve);
-    fileStream.on('error', reject);
-  });
 }
 
 async function main() {
@@ -162,58 +34,83 @@ async function main() {
   const [owner, repo] = repoFull.split('/');
   const workDir = process.cwd();
 
-  const videoId = extractVideoId(videoUrl);
-  if (!videoId) fail('مقدرتش أستخرج video ID من الرابط ده - اتأكد إنه رابط يوتيوب صحيح');
+  console.log(`⬇️  بدء تحميل الفيديو من: ${videoUrl}`);
 
-  console.log(`⬇️  بدء تحميل الفيديو: ${videoUrl} (ID: ${videoId})`);
+  // --print after_move:filepath بيطبع المسار النهائي للملف بعد ما التحميل
+  // والدمج (merge) يخلصوا خالص، وده أدق طريقة نعرف بيها اسم الملف الناتج.
+  const ytDlpArgs = [
+    '--quiet',
+    '--no-warnings',
+    '-f', 'bv*+ba/b',
+    '--merge-output-format', 'mp4',
+    '--restrict-filenames',
+    '-o', '%(title).150B [%(id)s].%(ext)s',
+    '--print', 'after_move:filepath',
+  ];
 
-  const data = await getStreamsInfo(videoId);
-  const title = sanitizeFilename(data.title || videoId);
-  const picked = pickBestStreams(data);
+  // محاولة player_client مختلفة (بدل الكوكيز) — بعض الـ clients (زي web/tv)
+  // أحيانًا بتتفادى فحص البوت لفترة قبل ما يوتيوب يحدّث الحظر عليها كمان.
+  // ده تجربة رخيصة ومش مضمونة 100%، قابلة للتعديل من الـ workflow من غير
+  // ما تلمس الكود تاني عن طريق متغير YTDLP_PLAYER_CLIENT.
+  const playerClient = process.env.YTDLP_PLAYER_CLIENT || 'default,tv,web_safari';
+  ytDlpArgs.push('--extractor-args', `youtube:player_client=${playerClient}`);
+  console.log(`🎭 هيتم تجربة player_client: ${playerClient}`);
 
-  let finalPath;
-
-  if (picked.type === 'progressive') {
-    const ext = extensionFromMime(picked.video.mimeType);
-    finalPath = path.join(workDir, `${title}.${ext}`);
-    console.log(`⬇️  تحميل نسخة مدموجة (فيديو+صوت) - جودة ${picked.video.quality}`);
-    await downloadToFile(picked.video.url, finalPath);
+  // IP بتاع GitHub Actions runners مصنف عند يوتيوب كـ"داتا سنتر" وغالبًا
+  // بيدي "Sign in to confirm you're not a bot" من غير كوكيز حقيقية.
+  // لو ملف cookies.txt موجود (اتحط في خطوة سابقة في الـ workflow) بنستخدمه.
+  const cookiesPath = path.join(workDir, 'cookies.txt');
+  if (fs.existsSync(cookiesPath)) {
+    console.log('🍪 هيتم استخدام كوكيز يوتيوب المحفوظة');
+    ytDlpArgs.push('--cookies', cookiesPath);
   } else {
-    const videoExt = extensionFromMime(picked.video.mimeType);
-    const audioExt = extensionFromMime(picked.audio.mimeType);
-    const videoTmp = path.join(workDir, `_video_tmp.${videoExt}`);
-    const audioTmp = path.join(workDir, `_audio_tmp.${audioExt}`);
-
-    console.log(`⬇️  تحميل الفيديو (${picked.video.quality}) والصوت (${picked.audio.quality}) منفصلين`);
-    await downloadToFile(picked.video.url, videoTmp);
-    await downloadToFile(picked.audio.url, audioTmp);
-
-    finalPath = path.join(workDir, `${title}.${videoExt}`);
-    console.log('🔧 بيتم دمج الفيديو والصوت باستخدام ffmpeg...');
-    execFileSync('ffmpeg', ['-y', '-i', videoTmp, '-i', audioTmp, '-c', 'copy', finalPath]);
-
-    fs.unlinkSync(videoTmp);
-    fs.unlinkSync(audioTmp);
+    console.log('⚠️  مفيش كوكيز محفوظة — لو الـ player_client مانفعش، ده هيبقى الحل الأكيد الجاي');
   }
 
-  const fileSize = fs.statSync(finalPath).size;
-  const fileName = path.basename(finalPath);
+  ytDlpArgs.push(videoUrl);
+
+  let filePath;
+  try {
+    // execFileSync (مش exec/execSync) عشان الرابط بييجي من مدخلات المستخدم
+    // ومش عايزين نمرره جوه shell string لتفادي أي مشاكل حقن أوامر.
+    const output = execFileSync('yt-dlp', ytDlpArgs, {
+      cwd: workDir,
+      encoding: 'utf-8',
+      maxBuffer: 1024 * 1024 * 50,
+    });
+    const lines = output.trim().split('\n').filter(Boolean);
+    filePath = lines[lines.length - 1];
+  } catch (err) {
+    fail(`فشل تحميل الفيديو عن طريق yt-dlp: ${err.message}`);
+  }
+
+  if (!filePath || !fs.existsSync(filePath)) {
+    fail('التحميل خلص بس مقدرتش ألاقي الملف الناتج على القرص');
+  }
+
+  const fullPath = path.resolve(workDir, filePath);
+  const fileName = path.basename(fullPath);
+  const fileSize = fs.statSync(fullPath).size;
+
   console.log(`✅ اتحمل: ${fileName} (${(fileSize / (1024 * 1024)).toFixed(1)} MB)`);
 
   const octokit = new Octokit({ auth: token });
   const tagName = `video-${Date.now()}`;
 
   console.log(`📦 بيتعمل Release جديد بالتاج: ${tagName}`);
+
   const release = await octokit.rest.repos.createRelease({
     owner,
     repo,
     tag_name: tagName,
-    name: title,
-    body: `تم التحميل تلقائيًا عن طريق Piped API من الرابط:\n${videoUrl}`,
+    name: fileName.replace(/\.[^/.]+$/, ''),
+    body: `تم التحميل تلقائيًا عن طريق GitHub Actions من الرابط:\n${videoUrl}`,
   });
 
   console.log('⬆️  بيتم رفع الفيديو كـ asset في الـ Release...');
-  const fileData = fs.readFileSync(finalPath);
+
+  const fileData = fs.readFileSync(fullPath);
+
   await octokit.rest.repos.uploadReleaseAsset({
     owner,
     repo,

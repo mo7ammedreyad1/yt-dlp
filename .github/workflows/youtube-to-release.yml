@@ -1,4 +1,4 @@
-name: تحميل فيديو يوتيوب (Piped API) ورفعه كـ Release
+name: تحميل فيديو يوتيوب ورفعه كـ Release
 
 on:
   workflow_dispatch:
@@ -23,20 +23,32 @@ jobs:
         with:
           node-version: '20'
 
-      # ffmpeg لازم بس لو الفيديو مطلوع من Piped كفيديو وصوت منفصلين
-      # (بعض الفيديوهات بترجع نسخة مدموجة جاهزة ومحتاجتوش دمج خالص)
-      - name: تثبيت ffmpeg
+      - name: تثبيت ffmpeg و yt-dlp
         run: |
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: تجهيز كوكيز يوتيوب (اختياري - لازمة لتفادي حظر البوت)
+        env:
+          YTDLP_COOKIES_B64: ${{ secrets.YTDLP_COOKIES }}
+        run: |
+          if [ -n "$YTDLP_COOKIES_B64" ]; then
+            echo "$YTDLP_COOKIES_B64" | base64 -d > cookies.txt
+            echo "تم تجهيز ملف الكوكيز"
+          else
+            echo "مفيش secret اسمه YTDLP_COOKIES - هيتم المحاولة من غيره"
+          fi
 
       - name: تثبيت مكتبات Node
         run: npm install
 
-      - name: تحميل الفيديو عن طريق Piped API ورفعه كـ Release
+      - name: تحميل الفيديو ورفعه كـ Release
         env:
           VIDEO_URL: ${{ inputs.video_url }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # اختياري: لو عايز تحدد قايمة instances بنفسك بدل الافتراضية اللي في الكود
-          # PIPED_INSTANCES: 'https://pipedapi.kavin.rocks,https://pipedapi.adminforge.de'
+          # جرب قيم تانية هنا لو الافتراضية مانفعتش، زي: 'android,web' أو 'ios,web'
+          YTDLP_PLAYER_CLIENT: 'default,tv,web_safari'
         run: node download-and-release.js
